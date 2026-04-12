@@ -328,6 +328,8 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     m_baseFeralAP = 0;
     m_baseManaRegen = 0;
     m_baseHealthRegen = 0;
+    m_gameMasterHealthModifier = 0;
+    m_gameMasterManaModifier = 0;
     m_spellPenetrationItemMod = 0;
 
     // Honor System

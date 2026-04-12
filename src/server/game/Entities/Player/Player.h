@@ -1963,6 +1963,10 @@ public:
     void UpdateArmor() override;
     void UpdateMaxHealth() override;
     void UpdateMaxPower(Powers power) override;
+    [[nodiscard]] int32 GetGameMasterHealthModifier() const { return m_gameMasterHealthModifier; }
+    void SetGameMasterHealthModifier(int32 value) { m_gameMasterHealthModifier = value; }
+    [[nodiscard]] int32 GetGameMasterManaModifier() const { return m_gameMasterManaModifier; }
+    void SetGameMasterManaModifier(int32 value) { m_gameMasterManaModifier = value; }
     void ApplyFeralAPBonus(int32 amount, bool apply);
     void UpdateAttackPowerAndDamage(bool ranged = false) override;
     void UpdateShieldBlockValue();
@@ -2874,6 +2878,8 @@ protected:
     uint32 m_baseFeralAP;
     uint32 m_baseManaRegen;
     uint32 m_baseHealthRegen;
+    int32 m_gameMasterHealthModifier;
+    int32 m_gameMasterManaModifier;
     int32 m_spellPenetrationItemMod;
 
     SpellModContainer m_spellMods[MAX_SPELLMOD];

@@ -318,6 +318,7 @@ void Player::UpdateMaxHealth()
     value *= GetPctModifierValue(unitMod, BASE_PCT);
     value += GetFlatModifierValue(unitMod, TOTAL_VALUE) + GetHealthBonusFromStamina();
     value *= GetPctModifierValue(unitMod, TOTAL_PCT);
+    value = std::max(1.0f, value + GetGameMasterHealthModifier());
 
     sScriptMgr->OnPlayerAfterUpdateMaxHealth(this, value);
     SetMaxHealth((uint32)value);
@@ -333,6 +334,9 @@ void Player::UpdateMaxPower(Powers power)
     value *= GetPctModifierValue(unitMod, BASE_PCT);
     value += GetFlatModifierValue(unitMod, TOTAL_VALUE) +  bonusPower;
     value *= GetPctModifierValue(unitMod, TOTAL_PCT);
+
+    if (power == POWER_MANA)
+        value = std::max(0.0f, value + GetGameMasterManaModifier());
 
     sScriptMgr->OnPlayerAfterUpdateMaxPower(this, power, value);
     SetMaxPower(power, uint32(value));

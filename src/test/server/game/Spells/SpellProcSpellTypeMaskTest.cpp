@@ -28,9 +28,10 @@
  * - HIT phase: Damage/heal info is available
  * - FINISH phase: damageInfo may be null even for damage spells
  *
- * Regression test for: FINISH phase was incorrectly using NO_DMG_HEAL when
- * damageInfo was null, breaking procs like Killing Machine (51124) that
- * require SpellTypeMask=DAMAGE and SpellPhaseMask=FINISH.
+ * Regression tests for:
+ * - FINISH phase incorrectly classifying damage-over-time casts as non-damage
+ * - FINISH phase being too broad and letting utility spells satisfy
+ *   DAMAGE/HEAL proc filters
  */
 class SpellProcSpellTypeMaskTest : public AuraScriptProcTestFixture
 {
@@ -46,21 +47,33 @@ protected:
      * This mirrors the logic in Unit::ProcSkillsAndAuras to allow unit testing
      * of the spellTypeMask calculation without needing full Unit objects.
      */
-    static uint32 CalculateSpellTypeMask(uint32 procPhase, DamageInfo* damageInfo, HealInfo* healInfo, bool hasSpellInfo)
+    static uint32 CalculateSpellTypeMask(uint32 procPhase, DamageInfo* damageInfo, HealInfo* healInfo, SpellInfo const* spellInfo)
     {
         uint32 spellTypeMask = 0;
         if (procPhase == PROC_SPELL_PHASE_CAST || procPhase == PROC_SPELL_PHASE_FINISH)
         {
-            // At CAST phase, no damage/heal has occurred yet - use MASK_ALL
-            // At FINISH phase, damageInfo may be null but spell did do damage - use MASK_ALL
-            spellTypeMask = PROC_SPELL_TYPE_MASK_ALL;
+            bool reliable = false;
+
+            if (spellInfo)
+                spellTypeMask = spellInfo->GetStaticProcSpellTypeMask(reliable);
+
+            if (!reliable)
+                spellTypeMask = PROC_SPELL_TYPE_MASK_ALL;
         }
         else if (healInfo && healInfo->GetHeal())
             spellTypeMask = PROC_SPELL_TYPE_HEAL;
         else if (damageInfo && damageInfo->GetDamage())
             spellTypeMask = PROC_SPELL_TYPE_DAMAGE;
-        else if (hasSpellInfo)
-            spellTypeMask = PROC_SPELL_TYPE_NO_DMG_HEAL;
+        else if (spellInfo)
+        {
+            bool reliable = false;
+            uint32 staticSpellTypeMask = spellInfo->GetStaticProcSpellTypeMask(reliable);
+
+            if (reliable && (staticSpellTypeMask & (PROC_SPELL_TYPE_DAMAGE | PROC_SPELL_TYPE_HEAL)))
+                spellTypeMask = staticSpellTypeMask & (PROC_SPELL_TYPE_DAMAGE | PROC_SPELL_TYPE_HEAL);
+            else
+                spellTypeMask = PROC_SPELL_TYPE_NO_DMG_HEAL;
+        }
 
         return spellTypeMask;
     }
@@ -70,22 +83,28 @@ protected:
 // SpellTypeMask Calculation Tests
 // =============================================================================
 
-TEST_F(SpellProcSpellTypeMaskTest, CastPhase_UsesMaskAll)
+TEST_F(SpellProcSpellTypeMaskTest, CastPhase_UsesStaticDamageTypeWhenReliable)
 {
-    // CAST phase should use MASK_ALL regardless of damage/heal info
-    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_CAST, nullptr, nullptr, true);
-    EXPECT_EQ(result, PROC_SPELL_TYPE_MASK_ALL);
+    auto* spellInfo = SpellInfoBuilder()
+        .WithId(700010)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE)
+        .Build();
+    _spellInfos.push_back(spellInfo);
+
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_CAST, nullptr, nullptr, spellInfo);
+    EXPECT_EQ(result, PROC_SPELL_TYPE_DAMAGE);
 }
 
-TEST_F(SpellProcSpellTypeMaskTest, FinishPhase_UsesMaskAll_EvenWithNullDamageInfo)
+TEST_F(SpellProcSpellTypeMaskTest, FinishPhase_UsesMaskAll_ForAmbiguousTriggeredSpell)
 {
-    // FINISH phase should use MASK_ALL even when damageInfo is null
-    // This is the key regression test - previously returned NO_DMG_HEAL
-    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, true);
-    EXPECT_EQ(result, PROC_SPELL_TYPE_MASK_ALL);
+    auto* spellInfo = SpellInfoBuilder()
+        .WithId(700011)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_DUMMY)
+        .Build();
+    _spellInfos.push_back(spellInfo);
 
-    // Verify it includes DAMAGE type (required for procs like Killing Machine)
-    EXPECT_TRUE(result & PROC_SPELL_TYPE_DAMAGE);
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, spellInfo);
+    EXPECT_EQ(result, PROC_SPELL_TYPE_MASK_ALL);
 }
 
 TEST_F(SpellProcSpellTypeMaskTest, HitPhase_WithDamage_UsesDamageType)
@@ -93,7 +112,7 @@ TEST_F(SpellProcSpellTypeMaskTest, HitPhase_WithDamage_UsesDamageType)
     auto* spellInfo = CreateSpellInfo(12345, 15, 0);
     DamageInfo damageInfo(nullptr, nullptr, 100, spellInfo, SPELL_SCHOOL_MASK_FROST, SPELL_DIRECT_DAMAGE);
 
-    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, &damageInfo, nullptr, true);
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, &damageInfo, nullptr, spellInfo);
     EXPECT_EQ(result, PROC_SPELL_TYPE_DAMAGE);
 }
 
@@ -102,14 +121,20 @@ TEST_F(SpellProcSpellTypeMaskTest, HitPhase_WithHeal_UsesHealType)
     auto* spellInfo = CreateSpellInfo(12345, 15, 0);
     HealInfo healInfo(nullptr, nullptr, 100, spellInfo, SPELL_SCHOOL_MASK_HOLY);
 
-    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, nullptr, &healInfo, true);
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, nullptr, &healInfo, spellInfo);
     EXPECT_EQ(result, PROC_SPELL_TYPE_HEAL);
 }
 
 TEST_F(SpellProcSpellTypeMaskTest, HitPhase_NoDamageNoHeal_UsesNoDmgHeal)
 {
     // HIT phase with no damage/heal info should use NO_DMG_HEAL
-    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, nullptr, nullptr, true);
+    auto* spellInfo = SpellInfoBuilder()
+        .WithId(700012)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_APPLY_AURA, SPELL_AURA_MOD_STAT)
+        .Build();
+    _spellInfos.push_back(spellInfo);
+
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_HIT, nullptr, nullptr, spellInfo);
     EXPECT_EQ(result, PROC_SPELL_TYPE_NO_DMG_HEAL);
 }
 
@@ -145,7 +170,8 @@ TEST_F(SpellProcSpellTypeMaskTest, KillingMachine_FinishPhase_MatchesDamageTypeM
 
     // Calculate what spellTypeMask FINISH phase would produce
     // (simulating Spell.cpp calling ProcSkillsAndAuras with nullptr damageInfo)
-    uint32 finishPhaseSpellTypeMask = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, true);
+    auto* icyTouchSpell = CreateSpellInfo(49909, 15, 2);
+    uint32 finishPhaseSpellTypeMask = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, icyTouchSpell);
 
     // Verify the calculated mask includes DAMAGE type
     EXPECT_TRUE(finishPhaseSpellTypeMask & PROC_SPELL_TYPE_DAMAGE)
@@ -179,17 +205,17 @@ TEST_F(SpellProcSpellTypeMaskTest, KillingMachine_FullIntegration_ProcTriggers)
     auto* icyTouchSpell = CreateSpellInfo(49909, 15, 2); // DK family, mask0=2
     DamageInfo damageInfo(nullptr, nullptr, 100, icyTouchSpell, SPELL_SCHOOL_MASK_FROST, SPELL_DIRECT_DAMAGE);
 
-    // Create event with FINISH phase and MASK_ALL (as the fix provides)
+    // Create event with FINISH phase and DAMAGE type (as static classification provides)
     auto eventInfo = ProcEventInfoBuilder()
         .WithTypeMask(PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_NEG)
         .WithHitMask(PROC_HIT_NORMAL)
-        .WithSpellTypeMask(PROC_SPELL_TYPE_MASK_ALL) // Fixed behavior
+        .WithSpellTypeMask(PROC_SPELL_TYPE_DAMAGE)
         .WithSpellPhaseMask(PROC_SPELL_PHASE_FINISH)
         .WithDamageInfo(&damageInfo)
         .Build();
 
     EXPECT_TRUE(sSpellMgr->CanSpellTriggerProcOnEvent(procEntry, eventInfo))
-        << "Killing Machine style proc should trigger on FINISH phase with MASK_ALL spellTypeMask";
+        << "Killing Machine style proc should trigger on FINISH phase with DAMAGE spellTypeMask";
 }
 
 /**
@@ -223,4 +249,71 @@ TEST_F(SpellProcSpellTypeMaskTest, KillingMachine_BugScenario_NoDmgHealFails)
     // This should fail - documenting the bug behavior
     EXPECT_FALSE(sSpellMgr->CanSpellTriggerProcOnEvent(procEntry, eventInfo))
         << "With NO_DMG_HEAL spellTypeMask, DAMAGE-requiring procs should NOT trigger (this was the bug)";
+}
+
+TEST_F(SpellProcSpellTypeMaskTest, FinishPhase_StaticClassification_DoesNotTreatSelfBuffAsDamageOrHeal)
+{
+    auto* selfBuffSpell = SpellInfoBuilder()
+        .WithId(700001)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_APPLY_AURA, SPELL_AURA_MOD_STAT)
+        .Build();
+    _spellInfos.push_back(selfBuffSpell);
+
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, selfBuffSpell);
+    EXPECT_EQ(result, PROC_SPELL_TYPE_NO_DMG_HEAL);
+}
+
+TEST_F(SpellProcSpellTypeMaskTest, FinishPhase_StaticClassification_TreatsDotCastAsDamageSpell)
+{
+    auto* dotSpell = SpellInfoBuilder()
+        .WithId(700002)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_APPLY_AURA, SPELL_AURA_PERIODIC_DAMAGE)
+        .Build();
+    _spellInfos.push_back(dotSpell);
+
+    uint32 result = CalculateSpellTypeMask(PROC_SPELL_PHASE_FINISH, nullptr, nullptr, dotSpell);
+    EXPECT_EQ(result, PROC_SPELL_TYPE_DAMAGE);
+}
+
+TEST_F(SpellProcSpellTypeMaskTest, Tradeskill_StaticClassification_IsNoDmgHeal)
+{
+    auto* tradeskillSpell = SpellInfoBuilder()
+        .WithId(700013)
+        .WithAttributes(SPELL_ATTR0_IS_TRADESKILL)
+        .Build();
+    _spellInfos.push_back(tradeskillSpell);
+
+    bool reliable = false;
+    uint32 result = tradeskillSpell->GetStaticProcSpellTypeMask(reliable);
+
+    EXPECT_TRUE(reliable);
+    EXPECT_EQ(result, PROC_SPELL_TYPE_NO_DMG_HEAL);
+}
+
+TEST_F(SpellProcSpellTypeMaskTest, PeriodicTick_DoesNotMatchNonPeriodicDamageCastProc)
+{
+    auto procEntry = SpellProcEntryBuilder()
+        .WithProcFlags(PROC_FLAG_DONE_SPELL_MAGIC_DMG_CLASS_NEG)
+        .WithSpellTypeMask(PROC_SPELL_TYPE_DAMAGE)
+        .WithSpellPhaseMask(PROC_SPELL_PHASE_FINISH)
+        .Build();
+
+    auto* dotSpell = SpellInfoBuilder()
+        .WithId(700003)
+        .WithEffect(EFFECT_0, SPELL_EFFECT_APPLY_AURA, SPELL_AURA_PERIODIC_DAMAGE)
+        .Build();
+    _spellInfos.push_back(dotSpell);
+
+    DamageInfo periodicTickInfo(nullptr, nullptr, 50, dotSpell, SPELL_SCHOOL_MASK_SHADOW, SPELL_DIRECT_DAMAGE);
+
+    auto eventInfo = ProcEventInfoBuilder()
+        .WithTypeMask(PROC_FLAG_DONE_PERIODIC)
+        .WithSpellTypeMask(PROC_SPELL_TYPE_DAMAGE)
+        .WithSpellPhaseMask(PROC_SPELL_PHASE_HIT)
+        .WithHitMask(PROC_HIT_NORMAL)
+        .WithDamageInfo(&periodicTickInfo)
+        .Build();
+
+    EXPECT_FALSE(sSpellMgr->CanSpellTriggerProcOnEvent(procEntry, eventInfo))
+        << "Periodic ticks must not match procs that only listen to spell cast/finish events";
 }

@@ -136,7 +136,9 @@ public:
             ChatHandler(target->GetSession()).PSendSysMessage(LANG_YOURS_HP_CHANGED, handler->GetNameLink(), healthPoints, healthPoints);
         }
 
-        target->SetMaxHealth(healthPoints);
+        int32 const baseMaxHealth = int32(target->GetMaxHealth()) - target->GetGameMasterHealthModifier();
+        target->SetGameMasterHealthModifier(healthPoints - baseMaxHealth);
+        target->UpdateMaxHealth();
         target->SetHealth(healthPoints);
 
         return true;
@@ -159,7 +161,9 @@ public:
             ChatHandler(target->GetSession()).PSendSysMessage(LANG_YOURS_MANA_CHANGED, handler->GetNameLink(), manaPoints, manaPoints);
         }
 
-        target->SetMaxPower(POWER_MANA, manaPoints);
+        int32 const baseMaxMana = int32(target->GetMaxPower(POWER_MANA)) - target->GetGameMasterManaModifier();
+        target->SetGameMasterManaModifier(manaPoints - baseMaxMana);
+        target->UpdateMaxPower(POWER_MANA);
         target->SetPower(POWER_MANA, manaPoints);
 
         return true;
